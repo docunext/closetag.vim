@@ -2,12 +2,14 @@
 " Summary: Functions and mappings to close open HTML/XML tags
 " Uses: <C-_> -- close matching open tag
 " Author: Steven Mueller <diffusor@ugcs.caltech.edu>
-" Last Modified: Tue Jun 05 21:32:03 PDT 2001 
-" Version: 0.8
-" TODO - bug in tag completion for vim 5.7: gets out of sync if a tag is 
-" on the same line as the cursor, but after the cursor's position
-" (works fine in vim60aa+)
+" Last Modified: Fri Jun 08 01:22:06 PDT 2001 
+" Version: 0.9
 " TODO - make matching work for all comments
+"  -- kinda works now, but needs syn sync minlines to be very long
+"  -- Only check whether in syntax in the beginning, then store comment tags
+"  in the tagstacks to determine whether to move into or out of comment mode
+" TODO - The new normal mode mapping clears recent messages with its <ESC>, and
+" it doesn't fix the null-undo issue for vim 5.7 anyway.
 "
 " Description:
 " This script eases redundant typing when writing html or xml files (even if
@@ -27,21 +29,32 @@
 " For XML, all tags must have a closing match or be terminated by />, as in
 " <empty-element/>.  These empty element tags are ignored for matching.
 "
-" Comments are not currently handled very well, so commenting out HTML in
-" certain ways may cause a "tag mismatch" message and no completion.  ie,
-" having '<!-- a href="blah">link!</a -->' between the cursor and the most
-" recent open tag above doesn't work.  Well matched tags in comments don't
-" cause a problem.
+" Comment checking is now handled by vim's internal syntax checking.  If tag
+" closing is initiated outside a comment, only tags outside of comments will
+" be matched.  When closing tags in comments, only tags within comments will
+" be matched, skipping any non-commented out code (wee!).  However, the
+" process of determining the syntax ID of an arbitrary position can still be
+" erroneous if a comment is not detected because the syntax highlighting is
+" out of sync, or really slow if syn sync minlines is large.
+" Set the b:closetag_disable_synID variable to disable this feature if you
+" have really big chunks of comment in your code and closing tags is too slow.
+" 
+" If syntax highlighting is not enabled, comments will not be handled very
+" well.  Commenting out HTML in certain ways may cause a "tag mismatch"
+" message and no completion.  For example, '<!--a href="blah">link!</a-->'
+" between the cursor and the most recent unclosed open tag above causes
+" trouble.  Properly matched well formed tags in comments don't cause a
+" problem.
 "
 " Install:
 " To use, place this file in your standard vim scripts directory, and source
 " it while editing the file you wish to close tags in.  If the filetype is not
-" set or the file is some sort of template with embedded HTML, you may get
-" HTML style tag matching by first setting the closetag_html_style global
+" set or the file is some sort of template with embedded HTML, you may force
+" HTML style tag matching by first defining the b:closetag_html_style buffer
 " variable.  Otherwise, the default is XML style tag matching.
 "
 " Example:
-"   :let g:closetag_html_style=1
+"   :let b:closetag_html_style=1
 "   :source ~/.vim/scripts/closetag.vim
 "
 " For greater convenience, load this script in an autocommand:
@@ -50,6 +63,39 @@
 " Also, set noignorecase for html files or edit b:unaryTagsStack to match your
 " capitalization style.  You may set this variable before or after loading the
 " script, or simply change the file itself.
+"
+" Configuration Variables:
+"
+" b:unaryTagsStack        Buffer local string containing a whitespace
+"                         seperated list of element names that should be
+"                         ignored while finding matching closetags.  Checking
+"                         is done according to the current setting of the
+"                         ignorecase option.
+"
+" b:closetag_html_style   Define this (as with let b:closetag_html_style=1)
+"                         and source the script again to set the
+"                         unaryTagsStack to its default value for html.
+"
+" b:closetag_disable_synID  Define this to disable comment checking if tag
+"                         closing is too slow.
+"
+" Changelog:
+" June 07, 2001 Thursday
+"   * Added comment handling.  Currently relies on synID, so if syn sync
+"     minlines is small, the chance for failure is high, but if minlines is
+"     large, tagclosing becomes rather slow...
+"
+"   * Changed normal mode closetag mapping to use <C-R> in insert mode
+"     rather than p in normal mode.  This has 2 implications:
+"       - Tag closing no longer clobbers the unnamed register
+"       - When tag closing fails or finds no match, no longer adds to the undo
+"         buffer for recent vim 6.0 development versions.
+"       - However, clears the last message when closing tags in normal mode
+"   
+"   * Changed the closetag_html_style variable to be buffer-local rather than
+"     global.
+"
+"   * Expanded documentation
 
 "------------------------------------------------------------------------------
 " User configurable settings
@@ -57,8 +103,8 @@
 
 " if html, don't close certain tags.  Works best if ignorecase is set.
 " otherwise, capitalize these elements according to your html editing style
-if !exists("b:unaryTagsStack")
-    if &filetype == "html" || exists("g:closetag_html_style")
+if !exists("b:unaryTagsStack") || exists("b:closetag_html_style")
+    if &filetype == "html" || exists("b:closetag_html_style")
 	let b:unaryTagsStack="Area Base Br DD DT HR Img Input LI Link Meta P Param"
     else " for xsl and xsl
 	let b:unaryTagsStack=""
@@ -72,8 +118,8 @@ endif
 let loaded_closetag=1
 
 " set up mappings for tag closing
-imap <C-_> <C-R>=GetCloseTag()<CR>
-map <C-_> "=GetCloseTag()<CR>p
+inoremap <C-_> <C-R>=GetCloseTag()<CR>
+map <C-_> a<C-_><ESC>
 
 "------------------------------------------------------------------------------
 " Tag closer - uses the stringstack implementation below
@@ -92,6 +138,7 @@ function! GetLastOpenTag(unaryTagsStack)
     let lineend=col(".") - 1 " start: cursor position
     let first=1              " flag for first line searched
     let b:TagStack=""        " main stack of tags
+    let startInComment=InComment()
 
     let tagpat='</\=\(\k\|[-:]\)\+\|/>'
     " Search for: closing tags </tag, opening tags <tag, and unary tag ends />
@@ -109,13 +156,19 @@ function! GetLastOpenTag(unaryTagsStack)
 	endif
 	let b:lineTagStack=""
 	let mpos=0
+	let b:TagCol=0
 	" Search the current line in the forward direction, pushing any tags
 	" onto a special stack for the current line
 	while (mpos > -1)
 	    let mpos=matchend(line,tagpat)
 	    if mpos > -1
+		let b:TagCol=b:TagCol+mpos
 		let tag=matchstr(line,tagpat)
-		call Push(matchstr(tag,'[^<>]\+'),"b:lineTagStack")
+		
+		if exists("b:closetag_disable_synID") || startInComment==InCommentAt(linenum, b:TagCol)
+		  let b:TagLine=linenum
+		  call Push(matchstr(tag,'[^<>]\+'),"b:lineTagStack")
+		endif
 		"echo "Tag: ".tag." ending at position ".mpos." in '".line."'."
 		let lineend=lineend-mpos
 		let line=strpart(line,mpos,lineend)
@@ -161,6 +214,16 @@ function! GetCloseTag()
     endif
 endfunction
 
+" return 1 if the cursor is in a syntactically identified comment field
+" (fails for empty lines: always returns not-in-comment)
+function! InComment()
+    return synIDattr(synID(line("."), col("."), 0), "name") =~ 'Comment'
+endfunction
+
+" return 1 if the position specified is in a syntactically identified comment field
+function! InCommentAt(line, col)
+    return synIDattr(synID(a:line, a:col, 0), "name") =~ 'Comment'
+endfunction
 
 "------------------------------------------------------------------------------
 " String Stacks
