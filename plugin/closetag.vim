@@ -2,14 +2,29 @@
 " Summary: Functions and mappings to close open HTML/XML tags
 " Uses: <C-_> -- close matching open tag
 " Author: Steven Mueller <diffusor@ugcs.caltech.edu>
-" Last Modified: Fri Jun 08 01:22:06 PDT 2001 
-" Version: 0.9
+" Last Modified: Tue May 24 13:29:48 PDT 2005 
+" Version: 0.9.1
+" XXX - breaks if close attempted while XIM is in preedit mode
+" TODO - allow usability as a global plugin -
+"    Add g:unaryTagsStack - always contains html tags settings
+"    and g:closetag_default_xml - user should define this to default to xml
+"    When a close is attempted but b:unaryTagsStack undefined,
+"    use b:closetag_html_style to determine if the file is to be treated
+"    as html or xml.  Failing that, check the filetype for xml or html.
+"    Finally, default to g:closetag_html_style.
+"    If the file is html, let b:unaryTagsStack=g:unaryTagsStack
+"    otherwise, let b:unaryTagsStack=""
 " TODO - make matching work for all comments
 "  -- kinda works now, but needs syn sync minlines to be very long
 "  -- Only check whether in syntax in the beginning, then store comment tags
 "  in the tagstacks to determine whether to move into or out of comment mode
 " TODO - The new normal mode mapping clears recent messages with its <ESC>, and
 " it doesn't fix the null-undo issue for vim 5.7 anyway.
+" TODO - make use of the following neat features:
+"  -- the ternary ?: operator
+"  -- :echomsg and :echoerr
+"  -- curly brace expansion for variables and function name definitions?
+"  -- check up on map <blah> \FuncName
 "
 " Description:
 " This script eases redundant typing when writing html or xml files (even if
@@ -23,8 +38,8 @@
 "
 " For HTML, a configurable list of tags are ignored in the matching process.
 " By default, the following tags will not be matched and thus not closed
-" automatically: Area, Base, Br, DD, DT, HR, Img, Input, LI, Link, Meta, P,
-" and Param.
+" automatically: area, base, br, dd, dt, hr, img, input, link, meta, and
+" param.
 "
 " For XML, all tags must have a closing match or be terminated by />, as in
 " <empty-element/>.  These empty element tags are ignored for matching.
@@ -77,9 +92,14 @@
 "                         unaryTagsStack to its default value for html.
 "
 " b:closetag_disable_synID  Define this to disable comment checking if tag
-"                         closing is too slow.
+"                         closing is too slow.  This can be set or unset
+"                         without having to source again.
 "
 " Changelog:
+" May 24, 2005 Tuesday
+"   * Changed function names to be script-local to avoid conflicts with other
+"     scripts' stack implementations.
+"
 " June 07, 2001 Thursday
 "   * Added comment handling.  Currently relies on synID, so if syn sync
 "     minlines is small, the chance for failure is high, but if minlines is
@@ -105,7 +125,7 @@
 " otherwise, capitalize these elements according to your html editing style
 if !exists("b:unaryTagsStack") || exists("b:closetag_html_style")
     if &filetype == "html" || exists("b:closetag_html_style")
-	let b:unaryTagsStack="Area Base Br DD DT HR Img Input LI Link Meta P Param"
+	let b:unaryTagsStack="area base br dd dt hr img input link meta param"
     else " for xsl and xsl
 	let b:unaryTagsStack=""
     endif
@@ -138,7 +158,7 @@ function! GetLastOpenTag(unaryTagsStack)
     let lineend=col(".") - 1 " start: cursor position
     let first=1              " flag for first line searched
     let b:TagStack=""        " main stack of tags
-    let startInComment=InComment()
+    let startInComment=s:InComment()
 
     let tagpat='</\=\(\k\|[-:]\)\+\|/>'
     " Search for: closing tags </tag, opening tags <tag, and unary tag ends />
@@ -165,9 +185,9 @@ function! GetLastOpenTag(unaryTagsStack)
 		let b:TagCol=b:TagCol+mpos
 		let tag=matchstr(line,tagpat)
 		
-		if exists("b:closetag_disable_synID") || startInComment==InCommentAt(linenum, b:TagCol)
+		if exists("b:closetag_disable_synID") || startInComment==s:InCommentAt(linenum, b:TagCol)
 		  let b:TagLine=linenum
-		  call Push(matchstr(tag,'[^<>]\+'),"b:lineTagStack")
+		  call s:Push(matchstr(tag,'[^<>]\+'),"b:lineTagStack")
 		endif
 		"echo "Tag: ".tag." ending at position ".mpos." in '".line."'."
 		let lineend=lineend-mpos
@@ -175,19 +195,19 @@ function! GetLastOpenTag(unaryTagsStack)
 	    endif
 	endwhile
 	" Process the current line stack
-	while (!EmptystackP("b:lineTagStack"))
-	    let tag=Pop("b:lineTagStack")
+	while (!s:EmptystackP("b:lineTagStack"))
+	    let tag=s:Pop("b:lineTagStack")
 	    if match(tag, "^/") == 0		"found end tag
-		call Push(tag,"b:TagStack")
+		call s:Push(tag,"b:TagStack")
 		"echo linenum." ".b:TagStack
-	    elseif EmptystackP("b:TagStack") && !Instack(tag, a:unaryTagsStack)	"found unclosed tag
+	    elseif s:EmptystackP("b:TagStack") && !s:Instack(tag, a:unaryTagsStack)	"found unclosed tag
 		return tag
 	    else
-		let endtag=Peekstack("b:TagStack")
+		let endtag=s:Peekstack("b:TagStack")
 		if endtag == "/".tag || endtag == "/"
-		    call Pop("b:TagStack")	"found a open/close tag pair
+		    call s:Pop("b:TagStack")	"found a open/close tag pair
 		    "echo linenum." ".b:TagStack
-		elseif !Instack(tag, a:unaryTagsStack) "we have a mismatch error
+		elseif !s:Instack(tag, a:unaryTagsStack) "we have a mismatch error
 		    echohl Error
 		    echon "\rError:"
 		    echohl None
@@ -216,12 +236,12 @@ endfunction
 
 " return 1 if the cursor is in a syntactically identified comment field
 " (fails for empty lines: always returns not-in-comment)
-function! InComment()
+function! s:InComment()
     return synIDattr(synID(line("."), col("."), 0), "name") =~ 'Comment'
 endfunction
 
 " return 1 if the position specified is in a syntactically identified comment field
-function! InCommentAt(line, col)
+function! s:InCommentAt(line, col)
     return synIDattr(synID(a:line, a:col, 0), "name") =~ 'Comment'
 endfunction
 
@@ -236,18 +256,18 @@ endfunction
 " a fully qualified (ie: g:, b:, etc) variable name.)
 
 " Helper functions
-function! SetKeywords()
+function! s:SetKeywords()
     let g:IsKeywordBak=&iskeyword
     let &iskeyword="33-255"
 endfunction
 
-function! RestoreKeywords()
+function! s:RestoreKeywords()
     let &iskeyword=g:IsKeywordBak
 endfunction
 
 " Push el onto the stack referenced by sname
-function! Push(el, sname)
-    if !EmptystackP(a:sname)
+function! s:Push(el, sname)
+    if !s:EmptystackP(a:sname)
 	exe "let ".a:sname."=a:el.' '.".a:sname
     else
 	exe "let ".a:sname."=a:el"
@@ -255,7 +275,7 @@ function! Push(el, sname)
 endfunction
 
 " Check whether the stack is empty
-function! EmptystackP(sname)
+function! s:EmptystackP(sname)
     exe "let stack=".a:sname
     if match(stack,"^ *$") == 0
 	return 1
@@ -265,11 +285,11 @@ function! EmptystackP(sname)
 endfunction
 
 " Return 1 if el is in stack sname, else 0.
-function! Instack(el, sname)
+function! s:Instack(el, sname)
     exe "let stack=".a:sname
-    call SetKeywords()
+    call s:SetKeywords()
     let m=match(stack, "\\<".a:el."\\>")
-    call RestoreKeywords()
+    call s:RestoreKeywords()
     if m < 0
 	return 0
     else
@@ -278,30 +298,30 @@ function! Instack(el, sname)
 endfunction
 
 " Return the first element in the stack
-function! Peekstack(sname)
-    call SetKeywords()
+function! s:Peekstack(sname)
+    call s:SetKeywords()
     exe "let stack=".a:sname
     let top=matchstr(stack, "\\<.\\{-1,}\\>")
-    call RestoreKeywords()
+    call s:RestoreKeywords()
     return top
 endfunction
 
 " Remove and return the first element in the stack
-function! Pop(sname)
-    if EmptystackP(a:sname)
+function! s:Pop(sname)
+    if s:EmptystackP(a:sname)
 	echo "Error!  Stack ".a:sname." is empty and can't be popped."
 	return ""
     endif
     exe "let stack=".a:sname
     " Find the first space, loc is 0-based.  Marks the end of 1st elt in stack.
-    call SetKeywords()
+    call s:SetKeywords()
     let loc=matchend(stack,"\\<.\\{-1,}\\>")
     exe "let ".a:sname."=strpart(stack, loc+1, strlen(stack))"
     let top=strpart(stack, match(stack, "\\<"), loc)
-    call RestoreKeywords()
+    call s:RestoreKeywords()
     return top
 endfunction
 
-function! Clearstack(sname)
+function! s:Clearstack(sname)
     exe "let ".a:sname."=''"
 endfunction
