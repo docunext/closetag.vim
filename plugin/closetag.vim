@@ -138,7 +138,7 @@ endif
 let loaded_closetag=1
 
 " set up mappings for tag closing
-inoremap <C-_> <C-R>=GetCloseTag()<CR>
+inoremap </ <C-R>=GetCloseTag()<CR>
 map <C-_> a<C-_><ESC>
 
 "------------------------------------------------------------------------------
