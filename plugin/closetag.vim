@@ -226,6 +226,13 @@ endfunction
 " Returns closing tag for most recent unclosed tag, respecting the
 " current setting of b:unaryTagsStack for tags that should not be closed
 function! GetCloseTag()
+  if !exists("b:unaryTagsStack") || exists("b:closetag_html_style")
+      if &filetype == "html" || exists("b:closetag_html_style")
+    let b:unaryTagsStack="area base br dd dt hr img input link meta param"
+      else " for xsl and xsl
+    let b:unaryTagsStack=""
+      endif
+  endif
     let tag=GetLastOpenTag("b:unaryTagsStack")
     if tag == ""
 	return ""
